@@ -6,7 +6,12 @@ package proxy
 
 import (
 	"github.com/prizem-io/h2/frames"
+	"github.com/prizem-io/h2/log"
 )
+
+func SetLogger(logger log.Logger) {
+	log.SetLogger(logger)
+}
 
 func sendHeaders(framer *frames.Framer, maxFrameSize uint32, streamID uint32, priority bool, exclusive bool, streamDependencyID uint32, weight uint8, blockFragment []byte, endStream bool) (err error) {
 	first := true
