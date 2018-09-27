@@ -37,13 +37,11 @@ type keyedState struct {
 }
 
 type Stream struct {
-	LocalID     uint32
-	RemoteID    uint32
-	Connection  Connection
-	Upstream    Upstream
-	Source      interface{}
-	Destination interface{}
-	Info        interface{}
+	LocalID    uint32
+	RemoteID   uint32
+	Connection Connection
+	Upstream   Upstream
+	Info       interface{}
 
 	middlewareName string
 	state          []keyedState
