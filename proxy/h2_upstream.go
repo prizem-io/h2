@@ -307,7 +307,7 @@ func (u *H2Upstream) handleError(err error, frame frames.Frame) error {
 		})
 		u.sendMu.Unlock()
 		if err != nil {
-			return errors.Wrapf(err, "%s WritePing: %v", err)
+			return errors.Wrapf(err, "WritePing: %v", err)
 		}
 		return e
 	default:
@@ -319,7 +319,7 @@ func (u *H2Upstream) handleError(err error, frame frames.Frame) error {
 		})
 		u.sendMu.Unlock()
 		if err != nil {
-			return errors.Wrapf(err, "%s WritePing: %v", err)
+			return errors.Wrapf(err, "WritePing: %v", err)
 		}
 		return e
 	}
