@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/prizem-io/h2/log"
 )
 
 type StreamState int32

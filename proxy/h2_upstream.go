@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 
 	"github.com/prizem-io/h2/frames"
+	"github.com/prizem-io/h2/log"
 )
 
 type H2Upstream struct {
@@ -150,7 +150,7 @@ func (u *H2Upstream) Serve() error {
 			})
 			u.sendMu.Unlock()
 			if err != nil {
-				log.Panicf("WriteSettingsAck: %v", err)
+				log.Errorf("WriteSettingsAck: %v", err)
 			}
 		case *frames.WindowUpdate:
 			if f.StreamID != 0 {
@@ -174,9 +174,7 @@ func (u *H2Upstream) Serve() error {
 			err = u.SendWindowUpdate(0, uint32(len(f.Data)))
 
 			if f.EndStream {
-				if log.GetLevel() >= log.DebugLevel {
-					log.Debugf("closeStream from %s", frame.Type())
-				}
+				log.Debugf("closeStream from %s", frame.Type())
 				stream.CloseRemote()
 			}
 		case *frames.Headers:
@@ -257,9 +255,7 @@ func (u *H2Upstream) handleHeaders(frame *frames.Headers, blockFragment []byte) 
 			Weight:             frame.Weight,
 		}, frame.EndStream)
 	if frame.EndStream {
-		if log.GetLevel() >= log.DebugLevel {
-			log.Debugf("closeStream from %s", frame.Type())
-		}
+		log.Debugf("closeStream from %s", frame.Type())
 		if stream.RemoteID != 0 && stream.LocalID != 0 {
 			stream.CloseRemote()
 		} else {
@@ -399,9 +395,7 @@ func (u *H2Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStrea
 	}
 
 	if endStream {
-		if log.GetLevel() >= log.DebugLevel {
-			log.Debugf("closeStream from SendHeaders")
-		}
+		log.Debugf("closeStream from SendHeaders")
 		stream.CloseLocal()
 	}
 

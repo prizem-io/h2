@@ -12,10 +12,10 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2/hpack"
 
 	"github.com/prizem-io/h2/frames"
+	"github.com/prizem-io/h2/log"
 )
 
 const initialMaxFrameSize = 16384
@@ -501,7 +501,7 @@ func (c *H2Connection) CreateStream(streamID uint32, headers []hpack.HeaderField
 	stream := AcquireStream()
 	stream.LocalID = streamID
 	if c == nil {
-		println("createStream c is nil")
+		log.Warn("createStream c is nil")
 	}
 	stream.Connection = c
 	stream.Upstream = target.Upstream
