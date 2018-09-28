@@ -148,8 +148,6 @@ func (c *HTTPConnection) Serve() error {
 		// TODO???
 		// if rh.connectionClose
 	}
-
-	return nil
 }
 
 func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) error {
@@ -251,7 +249,7 @@ func (c *HTTPConnection) serveH2() error {
 			return errors.Wrapf(err, "ReadFrame: %v", err)
 		}
 
-		//log.Printf("%s, Received: %v", info, frame)
+		//log.Infof("Received: %s -> %v", frame.Type(), frame)
 
 		switch f := frame.(type) {
 		case *frames.Ping:
@@ -274,7 +272,9 @@ func (c *HTTPConnection) serveH2() error {
 
 			c.sendMu.Lock()
 			err = c.framer.WriteFrame(&frames.Settings{
-				Ack: true,
+				Settings: map[frames.Setting]uint32{
+					frames.SettingsInitialWindowSize: 1073741824,
+				},
 			})
 			c.rw.Writer.Flush()
 			c.sendMu.Unlock()
@@ -360,8 +360,10 @@ func (c *HTTPConnection) serveH2() error {
 				return errors.Errorf("Could not from stream ID %d", frame.GetStreamID())
 			}
 			stream.Connection.SendStreamError(stream.RemoteID, f.ErrorCode)
-		//case *frames.GoAway:
-		//	c.Close()
+		case *frames.GoAway:
+			//c.Close()
+
+			return nil
 		default:
 			log.Errorf("unexpected connection frame of type %s", frame.Type())
 		}
@@ -427,7 +429,6 @@ func (c *HTTPConnection) SendData(streamID uint32, data []byte, endStream bool) 
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
-	//log.Infof("Writing %d bytes to client", len(data))
 	err := sendData(c.framer, c.maxFrameSize, streamID, data, endStream)
 	c.rw.Writer.Flush()
 
