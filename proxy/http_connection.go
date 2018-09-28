@@ -26,7 +26,7 @@ var bytesClientPrefaceLen = len(bytesClientPreface)
 var bytesClientPrefaceBody = []byte("SM\r\n\r\n")
 var bytesClientPrefaceBodyLen = len(bytesClientPrefaceBody)
 
-type H2Connection struct {
+type HTTPConnection struct {
 	conn net.Conn
 	rw   *bufio.ReadWriter
 
@@ -63,13 +63,13 @@ func Listen(ln net.Listener, director Director) error {
 func Accept(ln net.Listener, director Director) (Connection, error) {
 	conn, err := ln.Accept()
 	if err != nil {
-		return nil, errors.Wrap(err, "Error accepting connection")
+		return nil, errors.Wrap(err, "error accepting connection")
 	}
 
-	return NewH2Connection(conn, director)
+	return NewHTTPConnection(conn, director)
 }
 
-func NewH2Connection(conn net.Conn, director Director) (Connection, error) {
+func NewHTTPConnection(conn net.Conn, director Director) (Connection, error) {
 	tableSize := uint32(4 << 10)
 	hdec := hpack.NewDecoder(tableSize, func(f hpack.HeaderField) {})
 	var hencbuf bytes.Buffer
@@ -80,7 +80,7 @@ func NewH2Connection(conn net.Conn, director Director) (Connection, error) {
 	bw := bufio.NewWriter(conn)
 	rw := bufio.ReadWriter{Reader: br, Writer: bw}
 
-	return &H2Connection{
+	return &HTTPConnection{
 		conn:         conn,
 		rw:           &rw,
 		framer:       frames.NewFramer(rw.Writer, rw.Reader),
@@ -94,7 +94,7 @@ func NewH2Connection(conn net.Conn, director Director) (Connection, error) {
 	}, nil
 }
 
-func (c *H2Connection) Close() error {
+func (c *HTTPConnection) Close() error {
 	c.streamsMu.Lock()
 	streams := make(map[uint32]*Stream, len(c.streams))
 	for k, v := range c.streams {
@@ -109,7 +109,7 @@ func (c *H2Connection) Close() error {
 	return c.conn.Close()
 }
 
-func (c *H2Connection) Serve() error {
+func (c *HTTPConnection) Serve() error {
 	log.Infof("New connection from %s", c.conn.RemoteAddr())
 	defer log.Infof("Disconnected from %s", c.conn.RemoteAddr())
 	defer func() { _ = c.Close() }()
@@ -127,14 +127,14 @@ func (c *H2Connection) Serve() error {
 			buffer := make([]byte, bytesClientPrefaceBodyLen)
 			n, err := c.rw.Reader.Read(buffer)
 			if err != nil {
-				return errors.Wrap(err, "Error reading preface")
+				return errors.Wrap(err, "error reading preface")
 			}
 
 			if n != bytesClientPrefaceBodyLen && !bytes.Equal(buffer, bytesClientPrefaceBody) {
 				return errors.Wrap(err, "HTTP 2 client preface was expected")
 			}
 
-			log.Debug("Upgraded to H2")
+			log.Debug("Upgraded HTTP connection to H2")
 			return c.serveH2()
 		}
 
@@ -152,13 +152,13 @@ func (c *H2Connection) Serve() error {
 	return nil
 }
 
-func (c *H2Connection) handleHTTP1Request(rh *RequestHeader, streamID uint32) error {
+func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) error {
 	var body []byte
 	var err error
 	if rh.contentLength > 0 {
 		body, err = readBody(c.rw.Reader, rh.contentLength, 1000000, body)
 		if err != nil {
-			return errors.Wrap(err, "Error reading body")
+			return errors.Wrap(err, "error reading HTTP/1 body")
 		}
 	}
 
@@ -213,15 +213,25 @@ func (c *H2Connection) handleHTTP1Request(rh *RequestHeader, streamID uint32) er
 	context := SHContext{
 		Stream: stream,
 	}
-	context.Next(&HeadersParams{
+	err = context.Next(&HeadersParams{
 		Headers: headers,
 	}, !hasBody)
+	if err != nil {
+		log.Errorf("HTTP/1 send header error: %v", err)
+		respondWithError(&bridge, ErrInternalServerError, streamID, 500)
+		return nil
+	}
 
 	if hasBody {
 		context := SDContext{
 			Stream: stream,
 		}
-		context.Next(body, true)
+		err = context.Next(body, true)
+		if err != nil {
+			log.Errorf("HTTP/1 send data error: %v", err)
+			respondWithError(&bridge, ErrInternalServerError, streamID, 500)
+			return nil
+		}
 	}
 
 	// TODO timeout
@@ -231,7 +241,7 @@ func (c *H2Connection) handleHTTP1Request(rh *RequestHeader, streamID uint32) er
 	return nil
 }
 
-func (c *H2Connection) serveH2() error {
+func (c *HTTPConnection) serveH2() error {
 	for {
 		frame, err := c.framer.ReadFrame()
 		if err != nil {
@@ -272,25 +282,39 @@ func (c *H2Connection) serveH2() error {
 			if f.StreamID != 0 {
 				stream, ok := c.GetStream(f.StreamID)
 				if !ok {
-					return errors.Errorf("Could not from stream ID %d", frame.GetStreamID())
+					return errors.Errorf("could not from stream ID %d", frame.GetStreamID())
 				}
-				stream.Upstream.SendWindowUpdate(stream.RemoteID, f.WindowSizeIncrement)
+				err = stream.Upstream.SendWindowUpdate(stream.RemoteID, f.WindowSizeIncrement)
+				if err != nil {
+					log.Errorf("HTTP/2 stream window update error: %v", err)
+				}
 			}
 		case *frames.Data:
 			stream, ok := c.GetStream(f.StreamID)
 			if !ok {
-				return errors.Errorf("Could not from stream ID %d", frame.GetStreamID())
+				return errors.Errorf("could not from stream ID %d", frame.GetStreamID())
 			}
 			context := SDContext{
 				Stream: stream,
 			}
 			err = context.Next(f.Data, f.EndStream)
+			if err != nil {
+				log.Errorf("HTTP/2 data error: %v", err)
+				respondWithError(c, ErrInternalServerError, f.StreamID, 500)
+				continue
+			}
 
 			// Increase connection-level window size.
 			err = c.SendWindowUpdate(0, uint32(len(f.Data)))
+			if err != nil {
+				log.Errorf("HTTP/2 connection window update error: %v", err)
+			}
 		case *frames.Headers:
 			if f.EndHeaders {
 				err = c.handleHeaders(f, f.BlockFragment)
+				if err != nil {
+					log.Errorf("HTTP/2 header error: %v", err)
+				}
 			} else {
 				c.lastHeaders = f
 				c.blockbuf.Reset()
@@ -299,6 +323,9 @@ func (c *H2Connection) serveH2() error {
 		case *frames.PushPromise:
 			if f.EndHeaders {
 				err = c.handlePushPromise(f, f.BlockFragment)
+				if err != nil {
+					log.Errorf("HTTP/2 push promise error: %v", err)
+				}
 			} else {
 				c.lastPushPromise = f
 				c.blockbuf.Reset()
@@ -309,14 +336,23 @@ func (c *H2Connection) serveH2() error {
 			if f.EndHeaders {
 				if c.lastHeaders != nil {
 					err = c.handleHeaders(c.lastHeaders, c.blockbuf.Bytes())
+					if err != nil {
+						log.Errorf("HTTP/2 continuation error: %v", err)
+					}
 					c.lastHeaders = nil
 				} else if c.lastPushPromise != nil {
 					err = c.handlePushPromise(c.lastPushPromise, c.blockbuf.Bytes())
+					if err != nil {
+						log.Errorf("HTTP/2 continuation error: %v", err)
+					}
 					c.lastPushPromise = nil
 				}
 			} else {
 				c.blockbuf.Reset()
-				_, _ = c.blockbuf.Write(f.BlockFragment)
+				_, err = c.blockbuf.Write(f.BlockFragment)
+				if err != nil {
+					log.Errorf("HTTP/2 continuation error: %v", err)
+				}
 			}
 		case *frames.RSTStream:
 			stream, ok := c.GetStream(f.StreamID)
@@ -327,20 +363,16 @@ func (c *H2Connection) serveH2() error {
 		//case *frames.GoAway:
 		//	c.Close()
 		default:
-			log.Errorf("Unhandled connection frame of type %s", frame.Type())
+			log.Errorf("unexpected connection frame of type %s", frame.Type())
 		}
 	}
 }
 
-func (c *H2Connection) handleHeaders(frame *frames.Headers, blockFragment []byte) error {
+func (c *HTTPConnection) handleHeaders(frame *frames.Headers, blockFragment []byte) error {
 	headers, err := c.hdec.DecodeFull(blockFragment)
 	if err != nil {
 		return errors.Wrapf(err, "HeadersFrame: %v", err)
 	}
-	headers = append(headers, hpack.HeaderField{
-		Name:  "test",
-		Value: "test",
-	})
 	stream, ok := c.GetStream(frame.StreamID)
 	if !ok {
 		stream, err = c.CreateStream(frame.StreamID, headers)
@@ -363,10 +395,10 @@ func (c *H2Connection) handleHeaders(frame *frames.Headers, blockFragment []byte
 	}, frame.EndStream)
 }
 
-func (c *H2Connection) handlePushPromise(frame *frames.PushPromise, blockFragment []byte) error {
+func (c *HTTPConnection) handlePushPromise(frame *frames.PushPromise, blockFragment []byte) error {
 	stream, ok := c.GetStream(frame.StreamID)
 	if !ok {
-		return errors.Errorf("Could not from stream ID %d", frame.StreamID)
+		return errors.Errorf("could not from stream ID %d", frame.StreamID)
 	}
 	headers, err := c.hdec.DecodeFull(blockFragment)
 	if err != nil {
@@ -375,7 +407,7 @@ func (c *H2Connection) handlePushPromise(frame *frames.PushPromise, blockFragmen
 	return stream.Upstream.SendPushPromise(stream, headers, frame.PromisedStreamID)
 }
 
-func (c *H2Connection) encodeHeaders(fields []hpack.HeaderField) ([]byte, error) {
+func (c *HTTPConnection) encodeHeaders(fields []hpack.HeaderField) ([]byte, error) {
 	c.hmu.Lock()
 	defer c.hmu.Unlock()
 
@@ -391,7 +423,7 @@ func (c *H2Connection) encodeHeaders(fields []hpack.HeaderField) ([]byte, error)
 	return c.hencbuf.Bytes(), nil
 }
 
-func (c *H2Connection) SendData(streamID uint32, data []byte, endStream bool) error {
+func (c *HTTPConnection) SendData(streamID uint32, data []byte, endStream bool) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -406,7 +438,7 @@ func (c *H2Connection) SendData(streamID uint32, data []byte, endStream bool) er
 	return err
 }
 
-func (c *H2Connection) SendHeaders(streamID uint32, params *HeadersParams, endStream bool) error {
+func (c *HTTPConnection) SendHeaders(streamID uint32, params *HeadersParams, endStream bool) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -425,7 +457,7 @@ func (c *H2Connection) SendHeaders(streamID uint32, params *HeadersParams, endSt
 	return err
 }
 
-func (c *H2Connection) SendPushPromise(streamID uint32, headers Headers, promisedStreamID uint32) error {
+func (c *HTTPConnection) SendPushPromise(streamID uint32, headers Headers, promisedStreamID uint32) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -440,7 +472,7 @@ func (c *H2Connection) SendPushPromise(streamID uint32, headers Headers, promise
 	return err
 }
 
-func (c *H2Connection) SendWindowUpdate(streamID uint32, windowSizeIncrement uint32) error {
+func (c *HTTPConnection) SendWindowUpdate(streamID uint32, windowSizeIncrement uint32) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -456,7 +488,7 @@ func (c *H2Connection) SendWindowUpdate(streamID uint32, windowSizeIncrement uin
 	return err
 }
 
-func (c *H2Connection) SendStreamError(streamID uint32, errorCode frames.ErrorCode) error {
+func (c *HTTPConnection) SendStreamError(streamID uint32, errorCode frames.ErrorCode) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -471,7 +503,7 @@ func (c *H2Connection) SendStreamError(streamID uint32, errorCode frames.ErrorCo
 	return err
 }
 
-func (c *H2Connection) SendConnectionError(streamID uint32, lastStreamID uint32, errorCode frames.ErrorCode) error {
+func (c *HTTPConnection) SendConnectionError(streamID uint32, lastStreamID uint32, errorCode frames.ErrorCode) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 
@@ -483,7 +515,7 @@ func (c *H2Connection) SendConnectionError(streamID uint32, lastStreamID uint32,
 	return err
 }
 
-func (c *H2Connection) CreateStream(streamID uint32, headers []hpack.HeaderField) (*Stream, error) {
+func (c *HTTPConnection) CreateStream(streamID uint32, headers []hpack.HeaderField) (*Stream, error) {
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
 		if err == ErrNotFound {
@@ -516,22 +548,22 @@ func (c *H2Connection) CreateStream(streamID uint32, headers []hpack.HeaderField
 	return stream, nil
 }
 
-func (c *H2Connection) GetStream(streamID uint32) (*Stream, bool) {
+func (c *HTTPConnection) GetStream(streamID uint32) (*Stream, bool) {
 	c.streamsMu.RLock()
 	stream, ok := c.streams[streamID]
 	c.streamsMu.RUnlock()
 	return stream, ok
 }
 
-func (c *H2Connection) LocalAddr() string {
+func (c *HTTPConnection) LocalAddr() string {
 	return c.conn.LocalAddr().String()
 }
 
-func (c *H2Connection) RemoteAddr() string {
+func (c *HTTPConnection) RemoteAddr() string {
 	return c.conn.RemoteAddr().String()
 }
 
-func (c *H2Connection) closeStream(stream *Stream) {
+func (c *HTTPConnection) closeStream(stream *Stream) {
 	c.streamsMu.Lock()
 	delete(c.streams, stream.LocalID)
 	c.streamsMu.Unlock()

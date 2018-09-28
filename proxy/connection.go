@@ -41,8 +41,8 @@ func (c ConnectionAcceptors) ForName(name string) (factory ConnectionAcceptor, o
 
 var DefaultConnectionAcceptors = ConnectionAcceptors{
 	{
-		Name:   "HTTP/2",
-		Accept: NewH2Connection,
+		Name:   "HTTP",
+		Accept: NewHTTPConnection,
 	},
 }
 

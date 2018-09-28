@@ -151,7 +151,10 @@ func (u *H1Upstream) Address() string {
 func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
-	u.client.Do(req, resp)
+	err := u.client.Do(req, resp)
+	if err != nil {
+		return err
+	}
 
 	bodyBytes := resp.Body()
 	hasBody := len(bodyBytes) > 0
@@ -171,7 +174,7 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 	context := RHContext{
 		Stream: stream,
 	}
-	err := context.Next(
+	err = context.Next(
 		&HeadersParams{
 			Headers: respHeaders,
 		}, !hasBody)
