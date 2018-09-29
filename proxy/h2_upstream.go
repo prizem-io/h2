@@ -75,13 +75,13 @@ func NewH2Upstream(url string, tlsConfig *tls.Config) (Upstream, error) {
 	}
 
 	if _, err := io.WriteString(conn, http2.ClientPreface); err != nil {
-		return nil, errors.Wrap(err, "Error writing client preface")
+		return nil, errors.Wrap(err, "error writing client preface")
 	}
 
 	framer := frames.NewFramer(conn, conn)
 	err = framer.WriteFrame(&frames.Settings{})
 	if err != nil {
-		return nil, errors.Wrap(err, "Error writing settings")
+		return nil, errors.Wrap(err, "error writing settings")
 	}
 
 	tableSize := uint32(4 << 10)

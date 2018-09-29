@@ -240,6 +240,14 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 }
 
 func (c *HTTPConnection) serveH2() error {
+	// Send initial settings
+	err := c.SendSettings(false, map[frames.Setting]uint32{
+		frames.SettingsInitialWindowSize: 1073741824,
+	})
+	if err != nil {
+		return errors.Wrap(err, "error sending initial settings")
+	}
+
 	for {
 		frame, err := c.framer.ReadFrame()
 		if err != nil {
@@ -266,18 +274,11 @@ func (c *HTTPConnection) serveH2() error {
 			}
 
 			if maxFrameSize, ok := f.Settings[frames.SettingsMaxFrameSize]; ok {
-				log.Debugf("Setting max frame size to %d\n", maxFrameSize)
+				log.Debugf("Setting max frame size to %d", maxFrameSize)
 				c.maxFrameSize = maxFrameSize
 			}
 
-			c.sendMu.Lock()
-			err = c.framer.WriteFrame(&frames.Settings{
-				Settings: map[frames.Setting]uint32{
-					frames.SettingsInitialWindowSize: 1073741824,
-				},
-			})
-			c.rw.Writer.Flush()
-			c.sendMu.Unlock()
+			err = c.SendSettings(true, nil)
 		case *frames.WindowUpdate:
 			if f.StreamID != 0 {
 				stream, ok := c.GetStream(f.StreamID)
@@ -301,13 +302,12 @@ func (c *HTTPConnection) serveH2() error {
 			if err != nil {
 				log.Errorf("HTTP/2 data error: %v", err)
 				respondWithError(c, ErrInternalServerError, f.StreamID, 500)
-				continue
-			}
-
-			// Increase connection-level window size.
-			err = c.SendWindowUpdate(0, uint32(len(f.Data)))
-			if err != nil {
-				log.Errorf("HTTP/2 connection window update error: %v", err)
+			} else {
+				// Increase connection-level window size.
+				err = c.SendWindowUpdate(0, uint32(len(f.Data)))
+				if err != nil {
+					log.Errorf("HTTP/2 connection window update error: %v", err)
+				}
 			}
 		case *frames.Headers:
 			if f.EndHeaders {
@@ -367,6 +367,10 @@ func (c *HTTPConnection) serveH2() error {
 		default:
 			log.Errorf("unexpected connection frame of type %s", frame.Type())
 		}
+
+		if err != nil {
+			return err
+		}
 	}
 }
 
@@ -423,6 +427,22 @@ func (c *HTTPConnection) encodeHeaders(fields []hpack.HeaderField) ([]byte, erro
 	}
 
 	return c.hencbuf.Bytes(), nil
+}
+
+func (c *HTTPConnection) SendSettings(ack bool, settings map[frames.Setting]uint32) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	err := c.framer.WriteFrame(&frames.Settings{
+		Ack:      ack,
+		Settings: settings,
+	})
+	if err != nil {
+		return err
+	}
+	err = c.rw.Writer.Flush()
+
+	return err
 }
 
 func (c *HTTPConnection) SendData(streamID uint32, data []byte, endStream bool) error {
