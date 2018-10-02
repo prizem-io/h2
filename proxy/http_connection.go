@@ -42,7 +42,8 @@ type HTTPConnection struct {
 	streamsMu sync.RWMutex
 	streams   map[uint32]*Stream
 
-	continuations map[uint32]*continuation
+	continuationsMu sync.RWMutex
+	continuations   map[uint32]*continuation
 
 	maxFrameSize uint32
 }
@@ -180,10 +181,10 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 		conn:   c.conn,
 		stream: stream,
 		bw:     c.rw.Writer,
-		done:   make(chan struct{}, 1),
 	}
 	stream.LocalID = streamID
 	stream.Connection = &bridge
+	defer stream.CloseLocal()
 
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
@@ -228,10 +229,6 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 			return nil
 		}
 	}
-
-	// TODO timeout
-	<-bridge.done
-	stream.CloseLocal()
 
 	return nil
 }
@@ -319,10 +316,15 @@ func (c *HTTPConnection) serveH2() error {
 					log.Errorf("HTTP/2 header error: %v", err)
 				}
 			} else {
-				continuation := acquireContinuation()
-				c.continuations[stream.LocalID] = continuation
-				continuation.lastHeaders = f
-				_, err = continuation.blockbuf.Write(f.BlockFragment)
+				cont := acquireContinuation()
+				c.continuationsMu.Lock()
+				if c.continuations == nil {
+					c.continuations = make(map[uint32]*continuation)
+				}
+				c.continuations[stream.LocalID] = cont
+				c.continuationsMu.Unlock()
+				cont.lastHeaders = f
+				_, err = cont.blockbuf.Write(f.BlockFragment)
 			}
 		case *frames.PushPromise:
 			stream := c.NewStream(f.StreamID) // Use f.PromisedStreamID?
@@ -332,36 +334,43 @@ func (c *HTTPConnection) serveH2() error {
 					log.Errorf("HTTP/2 push promise error: %v", err)
 				}
 			} else {
-				continuation := acquireContinuation()
-				c.continuations[stream.LocalID] = continuation
-				continuation.lastPushPromise = f
-				_, err = continuation.blockbuf.Write(f.BlockFragment)
+				cont := acquireContinuation()
+				c.continuationsMu.Lock()
+				if c.continuations == nil {
+					c.continuations = make(map[uint32]*continuation)
+				}
+				c.continuations[stream.LocalID] = cont
+				c.continuationsMu.Unlock()
+				cont.lastPushPromise = f
+				_, err = cont.blockbuf.Write(f.BlockFragment)
 			}
 		case *frames.Continuation:
 			stream, ok := c.GetStream(f.StreamID)
 			if !ok {
 				return errors.Errorf("could not get stream ID %d", f.StreamID)
 			}
-			continuation, ok := c.continuations[stream.LocalID]
+			c.continuationsMu.RLock()
+			cont, ok := c.continuations[stream.LocalID]
+			c.continuationsMu.RUnlock()
 			if !ok {
 				return errors.Errorf("could not continue stream ID %d", f.StreamID)
 			}
-			_, err = continuation.blockbuf.Write(f.BlockFragment)
+			_, err = cont.blockbuf.Write(f.BlockFragment)
 			if err == nil && f.EndHeaders {
-				if continuation.lastHeaders != nil {
-					err = c.handleHeaders(stream, continuation.lastHeaders, continuation.blockbuf.Bytes())
+				if cont.lastHeaders != nil {
+					err = c.handleHeaders(stream, cont.lastHeaders, cont.blockbuf.Bytes())
 					if err != nil {
 						log.Errorf("HTTP/2 header continuation error: %v", err)
 					}
-				} else if continuation.lastPushPromise != nil {
-					err = c.handlePushPromise(stream, continuation.lastPushPromise, continuation.blockbuf.Bytes())
+				} else if cont.lastPushPromise != nil {
+					err = c.handlePushPromise(stream, cont.lastPushPromise, cont.blockbuf.Bytes())
 					if err != nil {
 						log.Errorf("HTTP/2 push promise continuation error: %v", err)
 					}
 				}
 
 				delete(c.continuations, stream.LocalID)
-				releaseContinuation(continuation)
+				releaseContinuation(cont)
 			}
 		case *frames.RSTStream:
 			stream, ok := c.GetStream(f.StreamID)
@@ -618,5 +627,9 @@ func (c *HTTPConnection) closeStream(stream *Stream) {
 	c.streamsMu.Lock()
 	delete(c.streams, stream.LocalID)
 	c.streamsMu.Unlock()
-	delete(c.continuations, stream.LocalID)
+	c.continuationsMu.Lock()
+	if c.continuations != nil {
+		delete(c.continuations, stream.LocalID)
+	}
+	c.continuationsMu.Unlock()
 }

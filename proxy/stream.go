@@ -66,13 +66,12 @@ type Stream struct {
 
 func AcquireStream() *Stream {
 	s := streamPool.Get().(*Stream)
-	//s := &Stream{}
 	s.reset()
 	return s
 }
 
 func ReleaseStream(stream *Stream) {
-	log.Debugf("Releasing %d -> %d\n", stream.LocalID, stream.RemoteID)
+	log.Debugf("Releasing %d -> %d", stream.LocalID, stream.RemoteID)
 	streamPool.Put(stream)
 }
 
@@ -104,14 +103,12 @@ func (s *Stream) AddCloseCallback(callback StreamClosed) {
 
 func (s *Stream) CloseLocal() {
 	atomic.StoreInt32((*int32)(&s.localState), int32(StreamStateClosed))
-	//s.localState = StreamStateClosed
 	log.Debugf("Stream %d/%d closed LOCAL", s.LocalID, s.RemoteID)
 	s.checkFullyClosed()
 }
 
 func (s *Stream) CloseRemote() {
 	atomic.StoreInt32((*int32)(&s.remoteState), int32(StreamStateClosed))
-	//.remoteState = StreamStateClosed
 	log.Debugf("Stream %d/%d closed REMOTE", s.LocalID, s.RemoteID)
 	s.checkFullyClosed()
 }
@@ -119,8 +116,6 @@ func (s *Stream) CloseRemote() {
 func (s *Stream) FullClose() {
 	atomic.StoreInt32((*int32)(&s.localState), int32(StreamStateClosed))
 	atomic.StoreInt32((*int32)(&s.remoteState), int32(StreamStateClosed))
-	//s.localState = StreamStateClosed
-	//s.remoteState = StreamStateClosed
 	s.invokeCallbacksAndRelease()
 }
 

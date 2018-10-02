@@ -20,7 +20,6 @@ type http1Bridge struct {
 	conn   net.Conn
 	stream *Stream
 	bw     *bufio.Writer
-	done   chan struct{}
 }
 
 func (h *http1Bridge) Close() error {
@@ -35,20 +34,28 @@ func (h *http1Bridge) SendHeaders(stream *Stream, params *HeadersParams, endStre
 	statusStr := Headers(params.Headers).ByName(":status")
 	status, _ := strconv.Atoi(statusStr)
 	statusText := http.StatusText(status)
-	h.bw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", status, statusText))
+	_, err := h.bw.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", status, statusText))
+	if err != nil {
+		return err
+	}
 
 	for _, header := range params.Headers {
 		if header.Name != ":status" {
 			mimeName := textproto.CanonicalMIMEHeaderKey(header.Name)
-			h.bw.WriteString(fmt.Sprintf("%s: %s\r\n", mimeName, header.Value))
+			_, err = h.bw.WriteString(fmt.Sprintf("%s: %s\r\n", mimeName, header.Value))
+			if err != nil {
+				return err
+			}
 		}
 	}
-	h.bw.WriteString("\r\n")
-	if endStream {
-		h.bw.Flush()
-		close(h.done)
+	_, err = h.bw.WriteString("\r\n")
+	if err != nil {
+		return err
 	}
-	return nil
+	if endStream {
+		err = h.bw.Flush()
+	}
+	return err
 }
 
 func (h *http1Bridge) SendPushPromise(stream *Stream, headers Headers, promisedStreamID uint32) error {
@@ -56,20 +63,20 @@ func (h *http1Bridge) SendPushPromise(stream *Stream, headers Headers, promisedS
 }
 
 func (h *http1Bridge) SendData(stream *Stream, data []byte, endStream bool) error {
-	h.bw.Write(data)
-	if endStream {
-		h.bw.Flush()
-		close(h.done)
+	_, err := h.bw.Write(data)
+	if err != nil {
+		return err
 	}
-	return nil
+	if endStream {
+		err = h.bw.Flush()
+	}
+	return err
 }
 
 func (h *http1Bridge) SendStreamError(stream *Stream, errorCode frames.ErrorCode) error {
-	close(h.done)
 	return nil
 }
 func (h *http1Bridge) SendConnectionError(stream *Stream, lastStreamID uint32, errorCode frames.ErrorCode) error {
-	close(h.done)
 	return nil
 }
 
