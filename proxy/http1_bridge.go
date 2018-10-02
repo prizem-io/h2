@@ -54,6 +54,7 @@ func (h *http1Bridge) SendHeaders(stream *Stream, params *HeadersParams, endStre
 	}
 	if endStream {
 		err = h.bw.Flush()
+		stream.CloseRemote()
 	}
 	return err
 }
@@ -69,6 +70,7 @@ func (h *http1Bridge) SendData(stream *Stream, data []byte, endStream bool) erro
 	}
 	if endStream {
 		err = h.bw.Flush()
+		stream.CloseRemote()
 	}
 	return err
 }
