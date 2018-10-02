@@ -49,12 +49,6 @@ func (c *RHContext) Next(params *HeadersParams, endStream bool) error {
 
 	// Finished processing the filters - call connection
 	if c.currentFilter >= len(filters) {
-		if c.Stream == nil {
-			println("oh damn 1")
-		}
-		if c.Stream.Connection == nil {
-			println("oh damn 2")
-		}
 		return c.Stream.Connection.SendHeaders(c.Stream, params, endStream)
 	}
 
