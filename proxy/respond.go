@@ -22,7 +22,7 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-func respondWithError(conn Connection, cause error, streamID uint32, status int) error {
+func respondWithError(stream *Stream, cause error, status int) error {
 	data, err := json.Marshal(&ErrorResponse{
 		Status:  status,
 		Message: cause.Error(),
@@ -31,7 +31,7 @@ func respondWithError(conn Connection, cause error, streamID uint32, status int)
 		return err
 	}
 
-	err = conn.SendHeaders(streamID, &HeadersParams{
+	err = stream.Connection.SendHeaders(stream, &HeadersParams{
 		Headers: Headers{
 			{
 				Name:  ":status",
@@ -51,7 +51,7 @@ func respondWithError(conn Connection, cause error, streamID uint32, status int)
 		return err
 	}
 
-	err = conn.SendData(streamID, data, true)
+	err = stream.Connection.SendData(stream, data, true)
 	if err != nil {
 		return err
 	}

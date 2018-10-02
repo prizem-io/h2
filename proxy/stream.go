@@ -21,11 +21,8 @@ const (
 
 var streamPool = sync.Pool{
 	New: func() interface{} {
-		log.Debug("CREATING NEW STREAM")
-		//s := new(Stream)
-		//return s
-		var s Stream
-		return &s
+		s := new(Stream)
+		return s
 	},
 }
 
@@ -68,24 +65,21 @@ type Stream struct {
 }
 
 func AcquireStream() *Stream {
-	//s := streamPool.Get().(*Stream)
-	s := &Stream{}
+	s := streamPool.Get().(*Stream)
+	//s := &Stream{}
 	s.reset()
 	return s
 }
 
 func ReleaseStream(stream *Stream) {
-	//stream.reset()
-	//streamPool.Put(stream)
+	log.Debugf("Releasing %d -> %d\n", stream.LocalID, stream.RemoteID)
+	streamPool.Put(stream)
 }
 
 func (s *Stream) reset() {
-	/**s = Stream{
-		stateDir:   1,
-	}*/
 	s.LocalID = 0
 	s.RemoteID = 0
-	//s.Connection = nil
+	s.Connection = nil
 	s.Upstream = nil
 
 	s.middlewareName = ""

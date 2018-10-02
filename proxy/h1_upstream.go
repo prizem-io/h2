@@ -117,7 +117,7 @@ func (u *H1Upstream) SendData(stream *Stream, data []byte, endStream bool) error
 	req, ok := u.requests[stream.RemoteID]
 	u.requestMu.Unlock()
 	if !ok {
-		return errors.Errorf("Could not find stream %d", stream.RemoteID)
+		return errors.Errorf("could not find stream %d", stream.RemoteID)
 	}
 
 	req.AppendBody(data)
@@ -179,7 +179,7 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 			Headers: respHeaders,
 		}, !hasBody)
 	if err != nil {
-		return errors.Wrap(err, "Could not send headers to connection")
+		return errors.Wrap(err, "could not send headers to connection")
 	}
 
 	if hasBody {
@@ -188,10 +188,9 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 		}
 		err = context.Next(bodyBytes, true)
 		if err != nil {
-			return errors.Wrap(err, "Could not send data to connection")
+			return errors.Wrap(err, "could not send data to connection")
 		}
 	}
 
-	stream.FullClose()
 	return nil
 }

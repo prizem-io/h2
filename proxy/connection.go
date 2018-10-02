@@ -83,16 +83,16 @@ type Connection interface {
 	CreateStream(streamID uint32, headers []hpack.HeaderField) (*Stream, error)
 
 	// Stream creation
-	SendHeaders(streamID uint32, params *HeadersParams, endStream bool) error
-	SendPushPromise(streamID uint32, headers Headers, promisedStreamID uint32) error
+	SendHeaders(stream *Stream, params *HeadersParams, endStream bool) error
+	SendPushPromise(stream *Stream, headers Headers, promisedStreamID uint32) error
 
 	// Sending data
-	SendData(streamID uint32, data []byte, endStream bool) error
-	SendWindowUpdate(streamID uint32, windowSizeIncrement uint32) error
+	SendData(stream *Stream, data []byte, endStream bool) error
+	SendWindowUpdate(stream *Stream, windowSizeIncrement uint32) error
 
 	// Error handling
-	SendStreamError(streamID uint32, errorCode frames.ErrorCode) error
-	SendConnectionError(streamID uint32, lastStreamID uint32, errorCode frames.ErrorCode) error
+	SendStreamError(stream *Stream, errorCode frames.ErrorCode) error
+	SendConnectionError(stream *Stream, lastStreamID uint32, errorCode frames.ErrorCode) error
 
 	LocalAddr() string
 	RemoteAddr() string

@@ -27,19 +27,17 @@ type H2Upstream struct {
 	sendMu sync.Mutex
 	framer *frames.Framer
 
-	blockbuf *bytes.Buffer
-	hdec     *hpack.Decoder
-	hencbuf  *bytes.Buffer
-	henc     *hpack.Encoder
-	hmu      sync.Mutex
+	hdec    *hpack.Decoder
+	hencbuf *bytes.Buffer
+	henc    *hpack.Encoder
+	hmu     sync.Mutex
 
 	nextStreamID uint32
 	streamsMu    sync.RWMutex
 	streams      map[uint32]*Stream
 	streamCount  uint32
 
-	lastHeaders     *frames.Headers
-	lastPushPromise *frames.PushPromise
+	continuations map[uint32]*continuation
 
 	maxFrameSize uint32
 }
@@ -88,12 +86,10 @@ func NewH2Upstream(url string, tlsConfig *tls.Config) (Upstream, error) {
 	hdec := hpack.NewDecoder(tableSize, func(f hpack.HeaderField) {})
 	var hencbuf bytes.Buffer
 	henc := hpack.NewEncoder(&hencbuf)
-	var blockbuf bytes.Buffer
 
 	return &H2Upstream{
 		conn:         conn,
 		framer:       framer,
-		blockbuf:     &blockbuf,
 		hdec:         hdec,
 		hencbuf:      &hencbuf,
 		henc:         henc,
@@ -158,7 +154,7 @@ func (u *H2Upstream) Serve() error {
 				if !ok {
 					return errors.Errorf("Could not from stream ID %d", frame.GetStreamID())
 				}
-				err = stream.Connection.SendWindowUpdate(stream.LocalID, f.WindowSizeIncrement)
+				err = stream.Connection.SendWindowUpdate(stream, f.WindowSizeIncrement)
 			}
 		case *frames.Data:
 			stream, ok := u.getRemoteStream(f.StreamID)
@@ -174,38 +170,68 @@ func (u *H2Upstream) Serve() error {
 			err = u.SendWindowUpdate(0, uint32(len(f.Data)))
 
 			if f.EndStream {
-				log.Debugf("closeStream from %s", frame.Type())
-				stream.CloseRemote()
+				u.closeStream(stream)
 			}
 		case *frames.Headers:
-			if f.EndHeaders {
-				err = u.handleHeaders(f, f.BlockFragment)
-			} else {
-				u.lastHeaders = f
-				u.blockbuf.Reset()
-				_, _ = u.blockbuf.Write(f.BlockFragment)
+			stream, ok := u.getRemoteStream(f.StreamID)
+			if !ok {
+				return errors.Errorf("getRemoteStream %s, %d", frame.Type(), f.StreamID)
 			}
-		case *frames.PushPromise:
 			if f.EndHeaders {
-				err = u.handlePushPromise(f, f.BlockFragment)
-			} else {
-				u.lastPushPromise = f
-				u.blockbuf.Reset()
-				_, _ = u.blockbuf.Write(f.BlockFragment)
-			}
-		case *frames.Continuation:
-			_, _ = u.blockbuf.Write(f.BlockFragment)
-			if f.EndHeaders {
-				if u.lastHeaders != nil {
-					err = u.handleHeaders(u.lastHeaders, u.blockbuf.Bytes())
-					u.lastHeaders = nil
-				} else if u.lastPushPromise != nil {
-					err = u.handlePushPromise(u.lastPushPromise, u.blockbuf.Bytes())
-					u.lastPushPromise = nil
+				err = u.handleHeaders(stream, f, f.BlockFragment)
+				if f.EndStream {
+					u.closeStream(stream)
 				}
 			} else {
-				u.blockbuf.Reset()
-				_, _ = u.blockbuf.Write(f.BlockFragment)
+				continuation := acquireContinuation()
+				u.continuations[stream.RemoteID] = continuation
+				continuation.lastHeaders = f
+				_, err = continuation.blockbuf.Write(f.BlockFragment)
+			}
+		case *frames.PushPromise:
+			stream, ok := u.getRemoteStream(f.StreamID)
+			if !ok {
+				return errors.Errorf("getRemoteStream %s, %d", frame.Type(), f.StreamID)
+			}
+			if f.EndHeaders {
+				err = u.handlePushPromise(stream, f, f.BlockFragment)
+				if err != nil {
+					log.Errorf("HTTP/2 push promise error: %v", err)
+				}
+			} else {
+				continuation := acquireContinuation()
+				u.continuations[stream.RemoteID] = continuation
+				continuation.lastPushPromise = f
+				_, err = continuation.blockbuf.Write(f.BlockFragment)
+			}
+		case *frames.Continuation:
+			stream, ok := u.getRemoteStream(f.StreamID)
+			if !ok {
+				return errors.Errorf("getRemoteStream %s, %d", frame.Type(), f.StreamID)
+			}
+			continuation, ok := u.continuations[stream.RemoteID]
+			if !ok {
+				return errors.Errorf("could not continue stream ID %d", f.StreamID)
+			}
+			_, err = continuation.blockbuf.Write(f.BlockFragment)
+			if err == nil && f.EndHeaders {
+				if continuation.lastHeaders != nil {
+					err = u.handleHeaders(stream, continuation.lastHeaders, continuation.blockbuf.Bytes())
+					if err != nil {
+						log.Errorf("HTTP/2 header continuation error: %v", err)
+					}
+					if continuation.lastHeaders.EndStream {
+						u.closeStream(stream)
+					}
+				} else if continuation.lastPushPromise != nil {
+					err = u.handlePushPromise(stream, continuation.lastPushPromise, continuation.blockbuf.Bytes())
+					if err != nil {
+						log.Errorf("HTTP/2 push promise continuation error: %v", err)
+					}
+				}
+
+				delete(u.continuations, stream.RemoteID)
+				releaseContinuation(continuation)
 			}
 		case *frames.Priority:
 			// Do nothing
@@ -214,9 +240,9 @@ func (u *H2Upstream) Serve() error {
 			if !ok {
 				return errors.Errorf("Could not from stream ID %d", frame.GetStreamID())
 			}
-			stream.Connection.SendStreamError(stream.LocalID, f.ErrorCode)
-		//case *frames.GoAway:
-		//u.Close()
+			stream.Connection.SendStreamError(stream, f.ErrorCode)
+		case *frames.GoAway:
+			return nil // Close the connection
 		default:
 			log.Errorf("Unhandled upstream frame of type %s", f.Type())
 		}
@@ -230,15 +256,12 @@ func (u *H2Upstream) Serve() error {
 	}
 }
 
-func (u *H2Upstream) handleHeaders(frame *frames.Headers, blockFragment []byte) error {
+func (u *H2Upstream) handleHeaders(stream *Stream, frame *frames.Headers, blockFragment []byte) error {
 	headers, err := u.hdec.DecodeFull(blockFragment)
 	if err != nil {
 		return errors.Wrapf(err, "HeadersFrame: %v", err)
 	}
-	stream, ok := u.getRemoteStream(frame.StreamID)
-	if !ok {
-		return errors.Errorf("getRemoteStream %s, %d", frame.Type(), frame.StreamID)
-	}
+
 	streamDependencyID, err := u.toLocalStreamID(frame.StreamDependencyID)
 	if err != nil {
 		return err
@@ -246,7 +269,7 @@ func (u *H2Upstream) handleHeaders(frame *frames.Headers, blockFragment []byte) 
 	context := RHContext{
 		Stream: stream,
 	}
-	err = context.Next(
+	return context.Next(
 		&HeadersParams{
 			Headers:            headers,
 			Priority:           frame.Priority,
@@ -254,32 +277,19 @@ func (u *H2Upstream) handleHeaders(frame *frames.Headers, blockFragment []byte) 
 			StreamDependencyID: streamDependencyID,
 			Weight:             frame.Weight,
 		}, frame.EndStream)
-	if frame.EndStream {
-		log.Debugf("closeStream from %s", frame.Type())
-		if stream.RemoteID != 0 && stream.LocalID != 0 {
-			stream.CloseRemote()
-		} else {
-			log.Debugf("closeStream encountered %d/%d for %d", stream.LocalID, stream.RemoteID, frame.StreamID)
-		}
-	}
-	return err
 }
 
-func (u *H2Upstream) handlePushPromise(frame *frames.PushPromise, blockFragment []byte) error {
+func (u *H2Upstream) handlePushPromise(stream *Stream, frame *frames.PushPromise, blockFragment []byte) error {
 	headers, err := u.hdec.DecodeFull(blockFragment)
 	if err != nil {
 		return errors.Wrapf(err, "PushPromiseFrame: %v", err)
-	}
-	stream, ok := u.getRemoteStream(frame.StreamID)
-	if !ok {
-		return errors.Errorf("getRemoteStream %s, %d", frame.Type(), frame.StreamID)
 	}
 	// TODO: Determine how to create the new local stream ID
 	promisedStreamID, err := u.toLocalStreamID(frame.PromisedStreamID)
 	if err != nil {
 		return err
 	}
-	return stream.Connection.SendPushPromise(stream.LocalID, headers, promisedStreamID)
+	return stream.Connection.SendPushPromise(stream, headers, promisedStreamID)
 }
 
 func (u *H2Upstream) encodeHeaders(fields []hpack.HeaderField) ([]byte, error) {
@@ -336,10 +346,6 @@ func (u *H2Upstream) SendData(stream *Stream, data []byte, endStream bool) error
 		return err
 	}
 
-	if endStream {
-		stream.CloseLocal()
-	}
-
 	return nil
 }
 
@@ -350,6 +356,7 @@ func (u *H2Upstream) closeStream(stream *Stream) {
 	u.streamCount = uint32(len(u.streams))
 	log.Debugf("-- stream count: %d", len(u.streams))
 	u.streamsMu.Unlock()
+	delete(u.continuations, stream.RemoteID)
 }
 
 func (u *H2Upstream) StreamCount() int {
@@ -357,9 +364,6 @@ func (u *H2Upstream) StreamCount() int {
 }
 
 func (u *H2Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStream bool) error {
-	u.sendMu.Lock()
-	defer u.sendMu.Unlock()
-
 	if stream.RemoteID == 0 {
 		u.streamsMu.Lock()
 		u.nextStreamID += 2
@@ -389,22 +393,12 @@ func (u *H2Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStrea
 		return err
 	}
 
-	err = sendHeaders(u.framer, u.maxFrameSize, stream.RemoteID, params.Priority, params.Exclusive, streamDependencyID, params.Weight, blockFragment, endStream)
-	if err != nil {
-		return err
-	}
-
-	if endStream {
-		log.Debugf("closeStream from SendHeaders")
-		stream.CloseLocal()
-	}
-
-	return nil
+	u.sendMu.Lock()
+	defer u.sendMu.Unlock()
+	return sendHeaders(u.framer, u.maxFrameSize, stream.RemoteID, params.Priority, params.Exclusive, streamDependencyID, params.Weight, blockFragment, endStream)
 }
 
 func (u *H2Upstream) SendPushPromise(stream *Stream, headers Headers, promisedStreamID uint32) error {
-	u.sendMu.Lock()
-	defer u.sendMu.Unlock()
 	var err error
 
 	// TODO: how to handle translating a stream ID when it does not exist in the connection
@@ -418,9 +412,9 @@ func (u *H2Upstream) SendPushPromise(stream *Stream, headers Headers, promisedSt
 		return err
 	}
 
-	err = sendPushPromise(u.framer, u.maxFrameSize, stream.RemoteID, promisedStreamID, blockFragment)
-
-	return err
+	u.sendMu.Lock()
+	defer u.sendMu.Unlock()
+	return sendPushPromise(u.framer, u.maxFrameSize, stream.RemoteID, promisedStreamID, blockFragment)
 }
 
 func (u *H2Upstream) SendStreamError(stream *Stream, errorCode frames.ErrorCode) error {
@@ -432,7 +426,7 @@ func (u *H2Upstream) SendStreamError(stream *Stream, errorCode frames.ErrorCode)
 		ErrorCode: errorCode,
 	})
 
-	stream.FullClose()
+	stream.FullClose() // ???
 
 	return err
 }
@@ -441,12 +435,10 @@ func (u *H2Upstream) SendWindowUpdate(streamID uint32, windowSizeIncrement uint3
 	u.sendMu.Lock()
 	defer u.sendMu.Unlock()
 
-	err := u.framer.WriteFrame(&frames.WindowUpdate{
+	return u.framer.WriteFrame(&frames.WindowUpdate{
 		StreamID:            streamID,
 		WindowSizeIncrement: windowSizeIncrement,
 	})
-
-	return err
 }
 
 func (u *H2Upstream) SendConnectionError(stream *Stream, lastStreamID uint32, errorCode frames.ErrorCode) error {

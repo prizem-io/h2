@@ -38,7 +38,6 @@ var (
 type RequestHeader struct {
 	//noCopy noCopy
 
-	//disableNormalizing bool
 	noHTTP11        bool
 	connectionClose bool
 	isGet           bool
@@ -53,10 +52,6 @@ type RequestHeader struct {
 	contentType []byte
 	userAgent   []byte
 
-	//h     []argsKV
-	//bufKV argsKV
-
-	//cookies []argsKV
 	headers Headers
 
 	rawHeaders []byte
@@ -99,8 +94,6 @@ func (h *RequestHeader) resetSkipNormalize() {
 	h.userAgent = h.userAgent[:0]
 
 	h.headers = h.headers[:0]
-	//h.cookies = h.cookies[:0]
-	//h.cookiesCollected = false
 
 	h.rawHeaders = h.rawHeaders[:0]
 }
@@ -262,8 +255,8 @@ func (h *RequestHeader) parseHeaders(buf []byte) (int, error) {
 
 	var s headerScanner
 	s.b = buf
-	//s.disableNormalizing = h.disableNormalizing
 	var err error
+
 	for s.next() {
 		headerName := strings.ToLower(string(s.key))
 		switch headerName {
@@ -417,7 +410,6 @@ func (s *headerScanner) next() bool {
 		return false
 	}
 	s.key = s.b[:n]
-	//normalizeHeaderKey(s.key, s.disableNormalizing)
 	n++
 	for len(s.b) > n && s.b[n] == ' ' {
 		n++
