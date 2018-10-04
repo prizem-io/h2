@@ -15,6 +15,7 @@ var (
 	ErrNotFound            = errors.New("route not found")
 	ErrServiceUnavailable  = errors.New("service unavailable")
 	ErrInternalServerError = errors.New("internal server error")
+	ErrGatewayTimeout      = errors.New("gateway timeout")
 )
 
 type ErrorResponse struct {
@@ -22,7 +23,7 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-func respondWithError(stream *Stream, cause error, status int) error {
+func RespondWithError(stream *Stream, cause error, status int) error {
 	data, err := json.Marshal(&ErrorResponse{
 		Status:  status,
 		Message: cause.Error(),

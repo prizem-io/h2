@@ -188,16 +188,18 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
-		if err == ErrNotFound {
-			respondWithError(stream, err, 404)
+		switch errors.Cause(err) {
+		case ErrNotFound:
+			RespondWithError(stream, err, 404)
 			return nil
-		} else if err == ErrServiceUnavailable {
-			respondWithError(stream, err, 503)
+		case ErrServiceUnavailable:
+			RespondWithError(stream, err, 503)
+			return nil
+		default:
+			log.Errorf("director error: %v", err)
+			RespondWithError(stream, ErrInternalServerError, 500)
 			return nil
 		}
-		log.Errorf("director error: %v", err)
-		respondWithError(stream, ErrInternalServerError, 500)
-		return nil
 	}
 
 	stream.Upstream = target.Upstream
@@ -214,7 +216,7 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 	}, !hasBody)
 	if err != nil {
 		log.Errorf("HTTP/1 send header error: %v", err)
-		respondWithError(stream, ErrInternalServerError, 500)
+		RespondWithError(stream, ErrInternalServerError, 500)
 		return nil
 	}
 
@@ -225,7 +227,7 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 		err = context.Next(body, true)
 		if err != nil {
 			log.Errorf("HTTP/1 send data error: %v", err)
-			respondWithError(stream, ErrInternalServerError, 500)
+			RespondWithError(stream, ErrInternalServerError, 500)
 			return nil
 		}
 	}
@@ -295,7 +297,7 @@ func (c *HTTPConnection) serveH2() error {
 			err = context.Next(f.Data, f.EndStream)
 			if err != nil {
 				log.Errorf("HTTP/2 data error: %v", err)
-				respondWithError(stream, ErrInternalServerError, 500)
+				RespondWithError(stream, ErrInternalServerError, 500)
 			} else {
 				// Increase connection-level window size.
 				err = c.SendWindowUpdate(nil, uint32(len(f.Data)))
@@ -573,14 +575,14 @@ func (c *HTTPConnection) directStream(stream *Stream, headers []hpack.HeaderFiel
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
 		if err == ErrNotFound {
-			respondWithError(stream, err, 404)
+			RespondWithError(stream, err, 404)
 			return nil
 		} else if err == ErrServiceUnavailable {
-			respondWithError(stream, err, 503)
+			RespondWithError(stream, err, 503)
 			return nil
 		}
 		log.Errorf("director error: %v", err)
-		respondWithError(stream, ErrInternalServerError, 500)
+		RespondWithError(stream, ErrInternalServerError, 500)
 		return nil
 	}
 
