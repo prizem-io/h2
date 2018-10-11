@@ -63,23 +63,27 @@ func (u *H1Upstream) StreamCount() int {
 
 func (u *H1Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStream bool) error {
 	//println("H1Upstream::SendHeaders")
-	nextStreamID := atomic.AddUint32(&u.currentStreamID, 2)
-	stream.RemoteID = nextStreamID
-	req := fasthttp.AcquireRequest()
-	u.requestMu.Lock()
-	u.requests[nextStreamID] = req
-	u.streamCount = uint32(len(u.requests))
-	u.requestMu.Unlock()
-	stream.AddCloseCallback(func(stream *Stream) {
+	var req *fasthttp.Request
+
+	if stream.RemoteID == 0 {
+		nextStreamID := atomic.AddUint32(&u.currentStreamID, 2)
+		stream.RemoteID = nextStreamID
+		req = fasthttp.AcquireRequest()
 		u.requestMu.Lock()
-		req, ok := u.requests[stream.RemoteID]
-		if ok {
-			fasthttp.ReleaseRequest(req)
-			delete(u.requests, stream.RemoteID)
-			u.streamCount = uint32(len(u.requests))
-		}
+		u.requests[nextStreamID] = req
+		u.streamCount = uint32(len(u.requests))
 		u.requestMu.Unlock()
-	})
+		stream.AddCloseCallback(u.closeRequest)
+	} else {
+		var ok bool
+		u.requestMu.Lock()
+		req, ok = u.requests[stream.RemoteID]
+		u.requestMu.Unlock()
+		if !ok {
+			return errors.Errorf("could not find stream %d", stream.RemoteID)
+		}
+	}
+
 	headers := params.Headers
 	method := headers.ByName(":method")
 	authority := headers.ByName(":authority")
@@ -105,6 +109,17 @@ func (u *H1Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStrea
 	}
 
 	return nil
+}
+
+func (u *H1Upstream) closeRequest(stream *Stream) {
+	u.requestMu.Lock()
+	defer u.requestMu.Unlock()
+	req, ok := u.requests[stream.RemoteID]
+	if ok {
+		fasthttp.ReleaseRequest(req)
+		delete(u.requests, stream.RemoteID)
+		u.streamCount = uint32(len(u.requests))
+	}
 }
 
 func (u *H1Upstream) SendPushPromise(stream *Stream, headers Headers, promisedStreamID uint32) error {
@@ -142,6 +157,29 @@ func (u *H1Upstream) SendStreamError(stream *Stream, errorCode frames.ErrorCode)
 
 func (u *H1Upstream) SendConnectionError(stream *Stream, lastStreamID uint32, errorCode frames.ErrorCode) error {
 	return nil
+}
+
+func (u *H1Upstream) CancelStream(stream *Stream) {
+	u.closeRequest(stream)
+	stream.RemoteID = 0
+}
+
+func (u *H1Upstream) RetryStream(stream *Stream) {
+	u.requestMu.Lock()
+	defer u.requestMu.Unlock()
+	if stream.RemoteID != 0 {
+		req, ok := u.requests[stream.RemoteID]
+		if ok {
+			fasthttp.ReleaseRequest(req)
+			delete(u.requests, stream.RemoteID)
+			u.streamCount = uint32(len(u.requests))
+		}
+	}
+	nextStreamID := atomic.AddUint32(&u.currentStreamID, 2)
+	stream.RemoteID = nextStreamID
+	req := fasthttp.AcquireRequest()
+	u.requests[nextStreamID] = req
+	u.streamCount = uint32(len(u.requests))
 }
 
 func (u *H1Upstream) Address() string {

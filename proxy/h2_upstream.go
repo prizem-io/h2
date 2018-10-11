@@ -159,7 +159,8 @@ func (u *H2Upstream) Serve() error {
 		case *frames.Data:
 			stream, ok := u.getRemoteStream(f.StreamID)
 			if !ok {
-				return errors.Errorf("getRemoteStream %s, %d", frame.Type(), f.StreamID)
+				// Ignore (most likely because the stream was cancelled due to timeout, etc.)
+				continue
 			}
 			context := RDContext{
 				Stream: stream,
@@ -351,12 +352,36 @@ func (u *H2Upstream) SendData(stream *Stream, data []byte, endStream bool) error
 
 func (u *H2Upstream) closeStream(stream *Stream) {
 	u.streamsMu.Lock()
-	log.Debugf("Closing stream %d -> %d", stream.LocalID, stream.RemoteID)
+	log.Debugf("Closing upstream stream %d -> %d", stream.LocalID, stream.RemoteID)
 	delete(u.streams, stream.RemoteID)
 	u.streamCount = uint32(len(u.streams))
-	log.Debugf("-- stream count: %d", len(u.streams))
+	log.Debugf("-- upstream stream count: %d", len(u.streams))
 	u.streamsMu.Unlock()
 	delete(u.continuations, stream.RemoteID)
+}
+
+func (u *H2Upstream) CancelStream(stream *Stream) {
+	u.closeStream(stream)
+	stream.RemoteID = 0
+}
+
+func (u *H2Upstream) RetryStream(stream *Stream) {
+	u.streamsMu.Lock()
+	if stream.RemoteID != 0 {
+		log.Debugf("Closing upstream stream %d -> %d", stream.LocalID, stream.RemoteID)
+		delete(u.streams, stream.RemoteID)
+		u.streamCount = uint32(len(u.streams))
+		log.Debugf("-- upstream stream count: %d", len(u.streams))
+		delete(u.continuations, stream.RemoteID)
+	}
+	u.nextStreamID += 2
+	stream.RemoteID = u.nextStreamID
+	log.Debugf("Opening upstream stream %d -> %d", stream.LocalID, stream.RemoteID)
+	u.streams[stream.RemoteID] = stream
+	u.streamCount = uint32(len(u.streams))
+	log.Debugf("++ upstream stream count: %d", len(u.streams))
+	u.streamsMu.Unlock()
+	// Close callback is already added
 }
 
 func (u *H2Upstream) StreamCount() int {
@@ -368,10 +393,10 @@ func (u *H2Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStrea
 		u.streamsMu.Lock()
 		u.nextStreamID += 2
 		stream.RemoteID = u.nextStreamID
-		log.Debugf("Opening stream %d -> %d", stream.LocalID, stream.RemoteID)
+		log.Debugf("Opening upstream stream %d -> %d", stream.LocalID, stream.RemoteID)
 		u.streams[stream.RemoteID] = stream
 		u.streamCount = uint32(len(u.streams))
-		log.Debugf("++ stream count: %d", len(u.streams))
+		log.Debugf("++ upstream stream count: %d", len(u.streams))
 		stream.AddCloseCallback(u.closeStream)
 		u.streamsMu.Unlock()
 	}

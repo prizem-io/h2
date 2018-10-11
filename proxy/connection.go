@@ -117,6 +117,9 @@ type Upstream interface {
 	SendStreamError(stream *Stream, errorCode frames.ErrorCode) error
 	SendConnectionError(stream *Stream, lastStreamID uint32, errorCode frames.ErrorCode) error
 
+	CancelStream(stream *Stream)
+	RetryStream(stream *Stream)
+
 	Address() string
 }
 
