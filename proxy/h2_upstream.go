@@ -159,7 +159,7 @@ func (u *H2Upstream) Serve() error {
 		case *frames.Data:
 			stream, ok := u.getRemoteStream(f.StreamID)
 			if !ok {
-				// Ignore (most likely because the stream was cancelled due to timeout, etc.)
+				// Ignore (most likely the stream was cancelled due to timeout, retry, etc.)
 				continue
 			}
 			context := RDContext{
@@ -176,7 +176,8 @@ func (u *H2Upstream) Serve() error {
 		case *frames.Headers:
 			stream, ok := u.getRemoteStream(f.StreamID)
 			if !ok {
-				return errors.Errorf("getRemoteStream %s, %d", frame.Type(), f.StreamID)
+				// Ignore (most likely the stream was cancelled due to timeout, retry, etc.)
+				continue
 			}
 			if f.EndHeaders {
 				err = u.handleHeaders(stream, f, f.BlockFragment)
