@@ -159,7 +159,7 @@ func (u *H2Upstream) Serve() error {
 		case *frames.Data:
 			stream, ok := u.getRemoteStream(f.StreamID)
 			if !ok {
-				// Ignore (most likely the stream was cancelled due to timeout, retry, etc.)
+				// Ignore processing (most likely the stream was cancelled due to timeout, retry, etc.)
 				continue
 			}
 			context := RDContext{
@@ -176,7 +176,19 @@ func (u *H2Upstream) Serve() error {
 		case *frames.Headers:
 			stream, ok := u.getRemoteStream(f.StreamID)
 			if !ok {
-				// Ignore (most likely the stream was cancelled due to timeout, retry, etc.)
+				// Ignore processing (most likely the stream was cancelled due to timeout, retry, etc.)
+				// but we still need to update the hpack decoder.
+				if f.EndHeaders {
+					_, err = u.hdec.DecodeFull(f.BlockFragment)
+				} else {
+					continuation := acquireContinuation()
+					u.continuations[stream.RemoteID] = continuation
+					continuation.lastHeaders = f
+					_, err = continuation.blockbuf.Write(f.BlockFragment)
+				}
+				if err != nil {
+					return errors.Wrapf(err, "error updating hpack decoder for cancelled stream: %v", err)
+				}
 				continue
 			}
 			if f.EndHeaders {
@@ -207,14 +219,30 @@ func (u *H2Upstream) Serve() error {
 				_, err = continuation.blockbuf.Write(f.BlockFragment)
 			}
 		case *frames.Continuation:
-			stream, ok := u.getRemoteStream(f.StreamID)
-			if !ok {
-				return errors.Errorf("getRemoteStream %s, %d", frame.Type(), f.StreamID)
-			}
-			continuation, ok := u.continuations[stream.RemoteID]
+			continuation, ok := u.continuations[f.StreamID]
 			if !ok {
 				return errors.Errorf("could not continue stream ID %d", f.StreamID)
 			}
+			stream, ok := u.getRemoteStream(f.StreamID)
+			if !ok {
+				// Ignore processing (most likely the stream was cancelled due to timeout, retry, etc.)
+				// but we still need to update the hpack decoder.
+				_, err = continuation.blockbuf.Write(f.BlockFragment)
+				if err == nil && f.EndHeaders {
+					_, err = u.hdec.DecodeFull(continuation.blockbuf.Bytes())
+					delete(u.continuations, stream.RemoteID)
+					releaseContinuation(continuation)
+				}
+				if f.EndHeaders {
+					delete(u.continuations, stream.RemoteID)
+					releaseContinuation(continuation)
+				}
+				if err != nil {
+					return errors.Wrapf(err, "error updating hpack decoder for cancelled stream: %v", err)
+				}
+				continue
+			}
+
 			_, err = continuation.blockbuf.Write(f.BlockFragment)
 			if err == nil && f.EndHeaders {
 				if continuation.lastHeaders != nil {
