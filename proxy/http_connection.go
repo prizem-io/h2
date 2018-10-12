@@ -189,10 +189,7 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 	stream.Connection = &bridge
 	defer stream.CloseLocal()
 
-	ok, err := c.DirectStream(stream, headers)
-	if err != nil {
-		return err
-	}
+	ok := c.DirectStream(stream, headers)
 	if !ok {
 		return nil
 	}
@@ -388,10 +385,7 @@ func (c *HTTPConnection) handleHeaders(stream *Stream, frame *frames.Headers, bl
 	if err != nil {
 		return errors.Wrapf(err, "HeadersFrame: %v", err)
 	}
-	ok, err := c.DirectStream(stream, headers)
-	if err != nil {
-		return err
-	}
+	ok := c.DirectStream(stream, headers)
 	if !ok {
 		return nil
 	}
@@ -565,24 +559,24 @@ func (c *HTTPConnection) NewStream(streamID uint32) *Stream {
 	return stream
 }
 
-func (c *HTTPConnection) DirectStream(stream *Stream, headers Headers) (bool, error) {
+func (c *HTTPConnection) DirectStream(stream *Stream, headers Headers) bool {
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
 		switch errors.Cause(err) {
 		case ErrNotFound:
 			RespondWithError(stream, err, 404)
-			return false, nil
+			return false
 
 		case ErrServiceUnavailable, ErrUnknownHost, ErrConnectionRefused:
 			RespondWithError(stream, err, 503)
-			return false, nil
+			return false
 		case ErrConnectionTimeout:
 			RespondWithError(stream, err, 504)
-			return false, nil
+			return false
 		default:
 			log.Errorf("director error: %v", err)
 			RespondWithError(stream, ErrInternalServerError, 500)
-			return false, nil
+			return false
 		}
 	}
 
@@ -590,7 +584,7 @@ func (c *HTTPConnection) DirectStream(stream *Stream, headers Headers) (bool, er
 	stream.Info = target.Info
 	stream.Initialize(target.Middlewares...)
 
-	return true, nil
+	return true
 }
 
 func (c *HTTPConnection) GetStream(streamID uint32) (*Stream, bool) {

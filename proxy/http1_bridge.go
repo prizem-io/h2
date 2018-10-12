@@ -89,7 +89,7 @@ func (h *http1Bridge) GetStream(streamID uint32) (*Stream, bool) {
 	return h.stream, false
 }
 
-func (h *http1Bridge) DirectStream(stream *Stream, headers Headers) (bool, error) {
+func (h *http1Bridge) DirectStream(stream *Stream, headers Headers) bool {
 	return h.c.DirectStream(stream, headers)
 }
 
