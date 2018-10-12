@@ -197,7 +197,7 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 	bodyBytes := resp.Body()
 	hasBody := len(bodyBytes) > 0
 
-	respHeaders := make([]hpack.HeaderField, 0, resp.Header.Len()+1)
+	respHeaders := make(Headers, 0, resp.Header.Len()+1)
 	respHeaders = append(respHeaders, hpack.HeaderField{
 		Name:  ":status",
 		Value: strconv.Itoa(resp.StatusCode()),

@@ -100,7 +100,9 @@ func (c *HTTPConnection) Close() error {
 	c.streamsMu.Unlock()
 
 	for _, stream := range streams {
-		stream.Upstream.SendStreamError(stream, frames.ErrorNone)
+		if stream.Upstream != nil {
+			stream.Upstream.SendStreamError(stream, frames.ErrorNone)
+		}
 	}
 
 	return c.conn.Close()
@@ -178,6 +180,7 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 
 	stream := AcquireStream()
 	bridge := http1Bridge{
+		c:      c,
 		conn:   c.conn,
 		stream: stream,
 		bw:     c.rw.Writer,
@@ -186,25 +189,13 @@ func (c *HTTPConnection) handleHTTP1Request(rh *RequestHeader, streamID uint32) 
 	stream.Connection = &bridge
 	defer stream.CloseLocal()
 
-	target, err := c.director(c.conn.RemoteAddr(), headers)
+	ok, err := c.DirectStream(stream, headers)
 	if err != nil {
-		switch errors.Cause(err) {
-		case ErrNotFound:
-			RespondWithError(stream, err, 404)
-			return nil
-		case ErrServiceUnavailable:
-			RespondWithError(stream, err, 503)
-			return nil
-		default:
-			log.Errorf("director error: %v", err)
-			RespondWithError(stream, ErrInternalServerError, 500)
-			return nil
-		}
+		return err
 	}
-
-	stream.Upstream = target.Upstream
-	stream.Info = target.Info
-	stream.AddMiddleware(target.Middlewares...)
+	if !ok {
+		return nil
+	}
 
 	hasBody := len(body) > 0
 
@@ -397,9 +388,12 @@ func (c *HTTPConnection) handleHeaders(stream *Stream, frame *frames.Headers, bl
 	if err != nil {
 		return errors.Wrapf(err, "HeadersFrame: %v", err)
 	}
-	err = c.directStream(stream, headers)
+	ok, err := c.DirectStream(stream, headers)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		return nil
 	}
 	context := SHContext{
 		Stream: stream,
@@ -428,7 +422,7 @@ func (c *HTTPConnection) handlePushPromise(stream *Stream, frame *frames.PushPro
 	return stream.Upstream.SendPushPromise(stream, headers, frame.PromisedStreamID)
 }
 
-func (c *HTTPConnection) encodeHeaders(fields []hpack.HeaderField) ([]byte, error) {
+func (c *HTTPConnection) encodeHeaders(fields Headers) ([]byte, error) {
 	c.hmu.Lock()
 	defer c.hmu.Unlock()
 
@@ -571,43 +565,32 @@ func (c *HTTPConnection) NewStream(streamID uint32) *Stream {
 	return stream
 }
 
-func (c *HTTPConnection) directStream(stream *Stream, headers []hpack.HeaderField) error {
+func (c *HTTPConnection) DirectStream(stream *Stream, headers Headers) (bool, error) {
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
-		if err == ErrNotFound {
+		switch errors.Cause(err) {
+		case ErrNotFound:
 			RespondWithError(stream, err, 404)
-			return nil
-		} else if err == ErrServiceUnavailable {
+			return false, nil
+
+		case ErrServiceUnavailable, ErrUnknownHost, ErrConnectionRefused:
 			RespondWithError(stream, err, 503)
-			return nil
+			return false, nil
+		case ErrConnectionTimeout:
+			RespondWithError(stream, err, 504)
+			return false, nil
+		default:
+			log.Errorf("director error: %v", err)
+			RespondWithError(stream, ErrInternalServerError, 500)
+			return false, nil
 		}
-		log.Errorf("director error: %v", err)
-		RespondWithError(stream, ErrInternalServerError, 500)
-		return nil
 	}
 
 	stream.Upstream = target.Upstream
 	stream.Info = target.Info
-	stream.AddMiddleware(target.Middlewares...)
+	stream.Initialize(target.Middlewares...)
 
-	return nil
-}
-
-func (c *HTTPConnection) CreateStream(streamID uint32, headers []hpack.HeaderField) (*Stream, error) {
-	stream := AcquireStream()
-	stream.LocalID = streamID
-	stream.Connection = c
-
-	err := c.directStream(stream, headers)
-	if err != nil {
-		return nil, err // TODO
-	}
-
-	c.streamsMu.Lock()
-	c.streams[streamID] = stream
-	c.streamsMu.Unlock()
-
-	return stream, nil
+	return true, nil
 }
 
 func (c *HTTPConnection) GetStream(streamID uint32) (*Stream, bool) {

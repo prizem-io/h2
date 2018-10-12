@@ -80,7 +80,7 @@ type Connection interface {
 	io.Closer
 	Serve() error
 	GetStream(streamID uint32) (*Stream, bool)
-	CreateStream(streamID uint32, headers []hpack.HeaderField) (*Stream, error)
+	DirectStream(stream *Stream, headers Headers) (bool, error)
 
 	// Stream creation
 	SendHeaders(stream *Stream, params *HeadersParams, endStream bool) error

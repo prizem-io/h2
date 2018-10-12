@@ -13,10 +13,10 @@ import (
 	"strconv"
 
 	"github.com/prizem-io/h2/frames"
-	"golang.org/x/net/http2/hpack"
 )
 
 type http1Bridge struct {
+	c      *HTTPConnection
 	conn   net.Conn
 	stream *Stream
 	bw     *bufio.Writer
@@ -81,7 +81,6 @@ func (h *http1Bridge) SendStreamError(stream *Stream, errorCode frames.ErrorCode
 func (h *http1Bridge) SendConnectionError(stream *Stream, lastStreamID uint32, errorCode frames.ErrorCode) error {
 	return nil
 }
-
 func (h *http1Bridge) SendWindowUpdate(stream *Stream, windowSizeIncrement uint32) error {
 	return nil
 }
@@ -90,8 +89,8 @@ func (h *http1Bridge) GetStream(streamID uint32) (*Stream, bool) {
 	return h.stream, false
 }
 
-func (h *http1Bridge) CreateStream(streamID uint32, headers []hpack.HeaderField) (*Stream, error) {
-	return h.stream, nil
+func (h *http1Bridge) DirectStream(stream *Stream, headers Headers) (bool, error) {
+	return h.c.DirectStream(stream, headers)
 }
 
 func (h *http1Bridge) LocalAddr() string {

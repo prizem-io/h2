@@ -177,67 +177,36 @@ func (s *Stream) State() interface{} {
 	return nil
 }
 
-func (s *Stream) addState(key string, state interface{}) {
-	s.state = append(s.state, keyedState{
-		key:   key,
-		state: state,
-	})
-}
+func (s *Stream) Initialize(middlewares ...Middleware) {
+	// Check that the stream is already initialized
+	if len(s.state) > 0 {
+		return
+	}
 
-func (s *Stream) SendHeaders(params HeadersParams, endStream bool) error {
-	return nil
-}
-
-func (s *Stream) SendData(data []byte, endStream bool) error {
-	return nil
-}
-
-func (s *Stream) ReceiveHeaders(params HeadersParams, endStream bool) error {
-	return nil
-}
-
-func (s *Stream) ReceiveData(data []byte, endStream bool) error {
-	return nil
-}
-
-func (s *Stream) addHeadersSender(sender HeadersSender) {
-	s.headersSenders = append(s.headersSenders, sender)
-}
-
-func (s *Stream) addHeadersReceiver(receiver HeadersReceiver) {
-	s.headersReceivers = append(s.headersReceivers, receiver)
-}
-
-func (s *Stream) addDataSender(sender DataSender) {
-	s.dataSenders = append(s.dataSenders, sender)
-}
-
-func (s *Stream) addDataReceiver(receiver DataReceiver) {
-	s.dataReceivers = append(s.dataReceivers, receiver)
-}
-
-func (s *Stream) AddMiddleware(middlewares ...Middleware) {
 	for _, middleware := range middlewares {
-		s.addState(middleware.Name(), middleware.InitialState())
+		s.state = append(s.state, keyedState{
+			key:   middleware.Name(),
+			state: middleware.InitialState(),
+		})
 
 		if headersSender, ok := middleware.(HeadersSender); ok {
 			log.Debugf("Adding Headers Sender %s", headersSender.Name())
-			s.addHeadersSender(headersSender)
+			s.headersSenders = append(s.headersSenders, headersSender)
 		}
 
 		if dataSender, ok := middleware.(DataSender); ok {
 			log.Debugf("Adding Data Sender %s", dataSender.Name())
-			s.addDataSender(dataSender)
+			s.dataSenders = append(s.dataSenders, dataSender)
 		}
 
 		if headersReceiver, ok := middleware.(HeadersReceiver); ok {
 			log.Debugf("Adding Headers Receiver %s", headersReceiver.Name())
-			s.addHeadersReceiver(headersReceiver)
+			s.headersReceivers = append(s.headersReceivers, headersReceiver)
 		}
 
 		if dataReceiver, ok := middleware.(DataReceiver); ok {
 			log.Debugf("Adding Data Receiver %s", dataReceiver.Name())
-			s.addDataReceiver(dataReceiver)
+			s.dataReceivers = append(s.dataReceivers, dataReceiver)
 		}
 	}
 }
