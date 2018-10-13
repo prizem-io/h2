@@ -22,7 +22,7 @@ import (
 
 type H1Upstream struct {
 	url     string
-	baseUrl string
+	baseURL string
 
 	currentStreamID uint32
 	streamCount     uint32
@@ -42,7 +42,7 @@ func NewH1Upstream(url string, tlsConfig *tls.Config) (Upstream, error) {
 
 	return &H1Upstream{
 		url:             url,
-		baseUrl:         fmt.Sprintf("http://%s", url),
+		baseURL:         fmt.Sprintf("http://%s", url),
 		currentStreamID: ^uint32(0),
 		client:          client,
 		requests:        make(map[uint32]*fasthttp.Request, 30),
@@ -62,7 +62,6 @@ func (u *H1Upstream) StreamCount() int {
 }
 
 func (u *H1Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStream bool) error {
-	//println("H1Upstream::SendHeaders")
 	var req *fasthttp.Request
 
 	if stream.RemoteID == 0 {
@@ -89,7 +88,7 @@ func (u *H1Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStrea
 	authority := headers.ByName(":authority")
 	path := headers.ByName(":path")
 
-	req.SetRequestURI(fmt.Sprintf("%s%s", u.baseUrl, path))
+	req.SetRequestURI(fmt.Sprintf("%s%s", u.baseURL, path))
 	req.Header.SetMethod(method)
 	req.Header.SetHost(authority)
 
@@ -127,7 +126,6 @@ func (u *H1Upstream) SendPushPromise(stream *Stream, headers Headers, promisedSt
 }
 
 func (u *H1Upstream) SendData(stream *Stream, data []byte, endStream bool) error {
-	//println("H1Upstream::SendData")
 	u.requestMu.Lock()
 	req, ok := u.requests[stream.RemoteID]
 	u.requestMu.Unlock()
@@ -191,7 +189,8 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 	defer fasthttp.ReleaseResponse(resp)
 	err := u.client.Do(req, resp)
 	if err != nil {
-		return err
+		HandleNetworkError(stream, err)
+		return nil
 	}
 
 	bodyBytes := resp.Body()

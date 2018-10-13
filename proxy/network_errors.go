@@ -23,17 +23,37 @@ func NormalizeNetworkError(err error) error {
 	}
 
 	switch t := err.(type) {
+	case *net.DNSError:
+		return ErrUnknownHost
 	case *net.OpError:
-		if t.Op == "dial" {
-			return ErrUnknownHost
-		} else if t.Op == "read" {
+		switch t.Op {
+		case "dial":
+			return ErrConnectionRefused
+		case "read":
 			return ErrConnectionRefused
 		}
 	case syscall.Errno:
-		if t == syscall.ECONNREFUSED {
+		switch t {
+		case syscall.ECONNREFUSED, syscall.EHOSTUNREACH, syscall.EHOSTDOWN:
 			return ErrConnectionRefused
 		}
 	}
 
 	return err
+}
+
+// HandleNetworkError responses with the appropriate error depending on the error type.
+func HandleNetworkError(stream *Stream, err error) {
+	err = NormalizeNetworkError(errors.Cause(err))
+
+	switch err {
+	case ErrNotFound:
+		RespondWithError(stream, err, 404)
+	case ErrServiceUnavailable, ErrUnknownHost, ErrConnectionRefused:
+		RespondWithError(stream, err, 503)
+	case ErrConnectionTimeout:
+		RespondWithError(stream, err, 504)
+	default:
+		RespondWithError(stream, ErrInternalServerError, 500)
+	}
 }

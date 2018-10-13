@@ -562,22 +562,8 @@ func (c *HTTPConnection) NewStream(streamID uint32) *Stream {
 func (c *HTTPConnection) DirectStream(stream *Stream, headers Headers) bool {
 	target, err := c.director(c.conn.RemoteAddr(), headers)
 	if err != nil {
-		switch errors.Cause(err) {
-		case ErrNotFound:
-			RespondWithError(stream, err, 404)
-			return false
-
-		case ErrServiceUnavailable, ErrUnknownHost, ErrConnectionRefused:
-			RespondWithError(stream, err, 503)
-			return false
-		case ErrConnectionTimeout:
-			RespondWithError(stream, err, 504)
-			return false
-		default:
-			log.Errorf("director error: %v", err)
-			RespondWithError(stream, ErrInternalServerError, 500)
-			return false
-		}
+		HandleNetworkError(stream, err)
+		return false
 	}
 
 	stream.Upstream = target.Upstream
