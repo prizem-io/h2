@@ -101,10 +101,7 @@ func (u *H1Upstream) SendHeaders(stream *Stream, params *HeadersParams, endStrea
 	}
 
 	if endStream {
-		err := u.handleRequest(req, stream)
-		if err != nil {
-			return err
-		}
+		go u.handleRequest(req, stream)
 	}
 
 	return nil
@@ -136,10 +133,7 @@ func (u *H1Upstream) SendData(stream *Stream, data []byte, endStream bool) error
 	req.AppendBody(data)
 
 	if endStream {
-		err := u.handleRequest(req, stream)
-		if err != nil {
-			return err
-		}
+		go u.handleRequest(req, stream)
 	}
 
 	return nil
@@ -184,13 +178,13 @@ func (u *H1Upstream) Address() string {
 	return u.url
 }
 
-func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error {
+func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 	err := u.client.Do(req, resp)
 	if err != nil {
 		HandleNetworkError(stream, err)
-		return nil
+		return
 	}
 
 	bodyBytes := resp.Body()
@@ -216,7 +210,8 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 			Headers: respHeaders,
 		}, !hasBody)
 	if err != nil {
-		return errors.Wrap(err, "could not send headers to connection")
+		HandleNetworkError(stream, err)
+		return
 	}
 
 	if hasBody {
@@ -225,9 +220,8 @@ func (u *H1Upstream) handleRequest(req *fasthttp.Request, stream *Stream) error 
 		}
 		err = context.Next(bodyBytes, true)
 		if err != nil {
-			return errors.Wrap(err, "could not send data to connection")
+			HandleNetworkError(stream, err)
+			return
 		}
 	}
-
-	return nil
 }
