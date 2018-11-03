@@ -6,7 +6,6 @@ package proxy
 
 import (
 	"bytes"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -42,42 +41,13 @@ type H2Upstream struct {
 	maxFrameSize uint32
 }
 
-func ConnectTLS(url string, tlsConfig *tls.Config) (net.Conn, error) {
-	conn, err := tls.Dial("tcp", url, tlsConfig)
-	if err != nil {
-		return nil, errors.Wrapf(err, "Error dialing %s", url)
-	}
-
-	return conn, nil
-}
-
-func Connect(url string) (net.Conn, error) {
-	conn, err := net.Dial("tcp", url)
-	if err != nil {
-		return nil, errors.Wrapf(err, "Error dialing %s", url)
-	}
-
-	return conn, nil
-}
-
-func NewH2Upstream(url string, tlsConfig *tls.Config) (Upstream, error) {
-	var conn net.Conn
-	var err error
-	if tlsConfig != nil {
-		conn, err = ConnectTLS(url, tlsConfig)
-	} else {
-		conn, err = Connect(url)
-	}
-	if err != nil {
-		return nil, err
-	}
-
+func NewH2Upstream(conn net.Conn) (Upstream, error) {
 	if _, err := io.WriteString(conn, http2.ClientPreface); err != nil {
 		return nil, errors.Wrap(err, "error writing client preface")
 	}
 
 	framer := frames.NewFramer(conn, conn)
-	err = framer.WriteFrame(&frames.Settings{})
+	err := framer.WriteFrame(&frames.Settings{})
 	if err != nil {
 		return nil, errors.Wrap(err, "error writing settings")
 	}

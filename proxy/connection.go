@@ -46,34 +46,6 @@ var DefaultConnectionAcceptors = ConnectionAcceptors{
 	},
 }
 
-type NamedUpstreamDialer struct {
-	Name string
-	Dial UpstreamDialer
-}
-
-type UpstreamDialers []NamedUpstreamDialer
-
-func (u UpstreamDialers) ForName(name string) (dialer UpstreamDialer, ok bool) {
-	for _, item := range u {
-		if item.Name == name {
-			return item.Dial, true
-		}
-	}
-
-	return nil, false
-}
-
-var DefaultUpstreamDialers = UpstreamDialers{
-	{
-		Name: "HTTP/2",
-		Dial: NewH2Upstream,
-	},
-	{
-		Name: "HTTP/1",
-		Dial: NewH1Upstream,
-	},
-}
-
 type ConnectionAcceptor func(conn net.Conn, director Director) (Connection, error)
 
 type Connection interface {
@@ -98,7 +70,7 @@ type Connection interface {
 	RemoteAddr() string
 }
 
-type UpstreamDialer func(url string, tlsConfig *tls.Config) (Upstream, error)
+type Dialer func(address string, secure bool) (net.Conn, error)
 
 type Upstream interface {
 	IsServed() bool
@@ -252,4 +224,22 @@ func ReadConfig(input interface{}, config interface{}) error {
 	}
 
 	return nil
+}
+
+func ConnectTLS(url string, tlsConfig *tls.Config) (net.Conn, error) {
+	conn, err := tls.Dial("tcp", url, tlsConfig)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Error dialing %s", url)
+	}
+
+	return conn, nil
+}
+
+func Connect(url string) (net.Conn, error) {
+	conn, err := net.Dial("tcp", url)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Error dialing %s", url)
+	}
+
+	return conn, nil
 }
