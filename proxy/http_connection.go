@@ -560,7 +560,7 @@ func (c *HTTPConnection) NewStream(streamID uint32) *Stream {
 }
 
 func (c *HTTPConnection) DirectStream(stream *Stream, headers Headers) bool {
-	target, err := c.director(c.conn.RemoteAddr(), headers)
+	target, err := c.director(c.conn, headers)
 	if err != nil {
 		HandleNetworkError(stream, err)
 		return false

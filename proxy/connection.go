@@ -134,7 +134,7 @@ type Target struct {
 	Info        interface{}
 }
 
-type Director func(remoteAddr net.Addr, headers Headers) (Target, error)
+type Director func(conn net.Conn, headers Headers) (Target, error)
 
 type Middleware interface {
 	Name() string
